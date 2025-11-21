@@ -16,13 +16,13 @@ DEFAULT_KEY_A = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
 BYPASS_KEYWORD = "bypass"  # Keyword for bypass mode
 
 # Application Settings
-APP_TITLE = "CWT Thread Verification - Kanban Card Tool"
+APP_TITLE = "Thread Verification - Kanban Card Tool"
 APP_VERSION = "1.0.0"
-APP_WIDTH = 600
-APP_HEIGHT = 500
+APP_WIDTH = 750
+APP_HEIGHT = 650
 
 # Reader Settings
-READER_TIMEOUT = 5  # Seconds to wait for card
+READER_TIMEOUT = 10  # Seconds to wait for card
 READER_NAME_FILTER = "acr122"  # Filter for ACR122U reader (case-insensitive)
 
 # UI Colors

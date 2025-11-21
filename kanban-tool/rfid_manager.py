@@ -24,6 +24,59 @@ class RFIDManager:
         self.reader = None
         self.connection = None
         self.logger = logging.getLogger(__name__)
+    
+    def check_card_present(self) -> bool:
+        """
+        Quick check if a card is present on the reader (non-blocking)
+        
+        Returns:
+            bool: True if card is present, False otherwise
+        """
+        if self.reader is None:
+            return False
+        
+        try:
+            # Try to create a quick connection
+            temp_connection = self.reader.createConnection()
+            temp_connection.connect()
+            
+            # If we get here, card is present
+            temp_connection.disconnect()
+            return True
+            
+        except (NoCardException, CardConnectionException):
+            return False
+        except Exception as e:
+            self.logger.debug(f"Error checking card presence: {e}")
+            return False
+    
+    def get_card_uid(self) -> Optional[str]:
+        """
+        Get the UID of the current card
+        
+        Returns:
+            Optional[str]: UID as hex string or None if not available
+        """
+        if self.connection is None:
+            return None
+        
+        try:
+            # Get UID using APDU command
+            # FF CA 00 00 00 - Get Data command for UID
+            get_uid_cmd = [0xFF, 0xCA, 0x00, 0x00, 0x00]
+            data, sw1, sw2 = self.connection.transmit(get_uid_cmd)
+            
+            if sw1 == 0x90 and sw2 == 0x00:
+                # Convert UID bytes to hex string
+                uid_hex = toHexString(data)
+                return uid_hex
+            else:
+                self.logger.debug(f"Failed to get UID: {sw1:02X} {sw2:02X}")
+                return None
+                
+        except Exception as e:
+            self.logger.debug(f"Error getting UID: {e}")
+            return None
         
     def connect_reader(self) -> Tuple[bool, str]:
         """
@@ -72,12 +125,21 @@ class RFIDManager:
         if self.reader is None:
             return False, "Reader not connected"
         
+        # Close any existing connection first
+        if self.connection is not None:
+            try:
+                self.connection.disconnect()
+            except:
+                pass
+            self.connection = None
+        
         try:
             # Try to connect to card
             start_time = time.time()
             
             while time.time() - start_time < timeout:
                 try:
+                    # Create new connection
                     self.connection = self.reader.createConnection()
                     self.connection.connect()
                     
@@ -87,11 +149,37 @@ class RFIDManager:
                     return True, "Card detected"
                     
                 except NoCardException:
-                    time.sleep(0.2)  # Wait before retry
+                    # No card present, clean up and retry
+                    if self.connection is not None:
+                        try:
+                            self.connection.disconnect()
+                        except:
+                            pass
+                        self.connection = None
+                    time.sleep(0.3)  # Wait before retry
                     continue
+                    
+                except CardConnectionException as e:
+                    # Connection error, clean up and retry
+                    self.logger.debug(f"Card connection error: {e}")
+                    if self.connection is not None:
+                        try:
+                            self.connection.disconnect()
+                        except:
+                            pass
+                        self.connection = None
+                    time.sleep(0.3)
+                    continue
+                    
                 except Exception as e:
                     self.logger.error(f"Error connecting to card: {e}")
-                    time.sleep(0.2)
+                    if self.connection is not None:
+                        try:
+                            self.connection.disconnect()
+                        except:
+                            pass
+                        self.connection = None
+                    time.sleep(0.3)
                     continue
             
             return False, "Timeout waiting for card"
@@ -207,7 +295,7 @@ class RFIDManager:
             if sw1 != 0x90 or sw2 != 0x00:
                 return False, f"Write failed: {sw1:02X} {sw2:02X}"
             
-            self.logger.info(f"Block {block} written: {toHexString(data)}")
+            self.logger.info(f"Block {block} written: {toHexString(list(data))}")
             return True, f"Block {block} written successfully"
             
         except Exception as e:
@@ -351,7 +439,7 @@ class RFIDManager:
             return False, f"Clear error: {str(e)}"
     
     def disconnect(self):
-        """Disconnect from card and reader"""
+        """Disconnect from card (keep reader connected)"""
         if self.connection is not None:
             try:
                 self.connection.disconnect()
@@ -359,5 +447,5 @@ class RFIDManager:
                 pass
             self.connection = None
         
-        self.reader = None
-        self.logger.info("Disconnected from reader")
+        # Keep self.reader connected for reuse
+        self.logger.info("Disconnected from card")

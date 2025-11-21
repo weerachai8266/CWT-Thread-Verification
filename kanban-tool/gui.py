@@ -23,15 +23,27 @@ class KanbanGUI:
         self.root.geometry(f"{APP_WIDTH}x{APP_HEIGHT}")
         self.root.resizable(False, False)
         
+        # Center window on screen
+        self.root.update_idletasks()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width - APP_WIDTH) // 2
+        y = (screen_height - APP_HEIGHT) // 2
+        self.root.geometry(f"{APP_WIDTH}x{APP_HEIGHT}+{x}+{y}")
+        
         # Callbacks to be set by main application
         self.on_write_kanban: Optional[Callable] = None
         self.on_read_kanban: Optional[Callable] = None
         self.on_write_bypass: Optional[Callable] = None
         self.on_clear_card: Optional[Callable] = None
+        self.on_write_multiple: Optional[Callable] = None
+        self.on_read_multiple: Optional[Callable] = None
+        self.on_clear_multiple: Optional[Callable] = None  # NEW
         
         # Status variables
         self.reader_status = tk.StringVar(value="Not Connected")
         self.card_status = tk.StringVar(value="No Card")
+        self.uid_var = tk.StringVar(value="-")
         
         # Thread input variables
         self.thread1_var = tk.StringVar()
@@ -65,7 +77,7 @@ class KanbanGUI:
         
         title_label = ttk.Label(
             header_frame,
-            text="CWT Thread Verification",
+            text="Thread Verification",
             font=('Arial', 16, 'bold')
         )
         title_label.grid(row=0, column=0)
@@ -108,6 +120,15 @@ class KanbanGUI:
             font=('Arial', 10, 'bold')
         )
         card_label.grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
+        
+        # Card UID
+        ttk.Label(status_frame, text="Card UID:").grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+        uid_label = ttk.Label(
+            status_frame,
+            textvariable=self.uid_var,
+            font=('Consolas', 9)
+        )
+        uid_label.grid(row=2, column=1, sticky=tk.W, padx=(10, 0), pady=(5, 0))
     
     def _create_input_section(self, parent):
         """Create thread input section"""
@@ -174,42 +195,74 @@ class KanbanGUI:
         """Create action buttons section"""
         button_frame = ttk.Frame(parent)
         button_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Configure columns
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
         button_frame.columnconfigure(2, weight=1)
-        button_frame.columnconfigure(3, weight=1)
         
-        # Write Kanban button
+        # Style for larger buttons
+        style = ttk.Style()
+        style.configure('Large.TButton', font=('Arial', 11), padding=10)
+        
+        # Row 1: Write, Write Multiple, Write Bypass
         write_btn = ttk.Button(
             button_frame,
             text="📝 Write Kanban",
-            command=self._handle_write_kanban
+            command=self._handle_write_kanban,
+            style='Large.TButton'
         )
-        write_btn.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+        write_btn.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5), ipady=5)
         
-        # Read Kanban button
-        read_btn = ttk.Button(
+        write_multi_btn = ttk.Button(
             button_frame,
-            text="📖 Read Kanban",
-            command=self._handle_read_kanban
+            text="📝📝 Write Multiple",
+            command=self._handle_write_multiple,
+            style='Large.TButton'
         )
-        read_btn.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
+        write_multi_btn.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5), ipady=5)
         
-        # Write Bypass button
         bypass_btn = ttk.Button(
             button_frame,
             text="⚡ Write Bypass",
-            command=self._handle_write_bypass
+            command=self._handle_write_bypass,
+            style='Large.TButton'
         )
-        bypass_btn.grid(row=0, column=2, sticky=(tk.W, tk.E), padx=(0, 5))
+        bypass_btn.grid(row=0, column=2, sticky=(tk.W, tk.E), ipady=5)
         
-        # Clear Card button
+        # Row 2: Read, Read Multiple, Clear
+        read_btn = ttk.Button(
+            button_frame,
+            text="📖 Read Kanban",
+            command=self._handle_read_kanban,
+            style='Large.TButton'
+        )
+        read_btn.grid(row=1, column=0, sticky=(tk.W, tk.E), padx=(0, 5), pady=(8, 0), ipady=5)
+        
+        read_multi_btn = ttk.Button(
+            button_frame,
+            text="📖📖 Read Multiple",
+            command=self._handle_read_multiple,
+            style='Large.TButton'
+        )
+        read_multi_btn.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(8, 0), ipady=5)
+        
         clear_btn = ttk.Button(
             button_frame,
             text="🗑️ Clear Card",
-            command=self._handle_clear_card
+            command=self._handle_clear_card,
+            style='Large.TButton'
         )
-        clear_btn.grid(row=0, column=3, sticky=(tk.W, tk.E))
+        clear_btn.grid(row=1, column=2, sticky=(tk.W, tk.E), pady=(8, 0), ipady=5)
+        
+        # Row 3: Clear Multiple
+        clear_multi_btn = ttk.Button(
+            button_frame,
+            text="🗑️🗑️ Clear Multiple",
+            command=self._handle_clear_multiple,
+            style='Large.TButton'
+        )
+        clear_multi_btn.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), padx=(0, 5), pady=(8, 0), ipady=5)
     
     def _create_log_section(self, parent):
         """Create log display section"""
@@ -259,10 +312,158 @@ class KanbanGUI:
             
             self.on_write_kanban(thread1, thread2)
     
+    def _handle_write_multiple(self):
+        """Handle Write Multiple button click"""
+        if self.on_write_multiple:
+            thread1 = self.thread1_var.get().strip()
+            thread2 = self.thread2_var.get().strip()
+            
+            if not thread1 or not thread2:
+                messagebox.showwarning(
+                    "Invalid Input",
+                    "Please enter both Thread 1 and Thread 2 codes."
+                )
+                return
+            
+            if len(thread1) > 16 or len(thread2) > 16:
+                messagebox.showerror(
+                    "Invalid Input",
+                    "Thread codes must be 16 characters or less."
+                )
+                return
+            
+            # Ask for quantity
+            quantity = self._ask_quantity()
+            if quantity > 0:
+                self.on_write_multiple(thread1, thread2, quantity)
+    
+    def _ask_quantity(self) -> int:
+        """Ask user for number of cards to write"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Write Multiple Cards")
+        dialog.geometry("300x150")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        result = [0]  # Use list to store result from inner function
+        
+        # Label
+        ttk.Label(
+            dialog,
+            text="How many cards do you want to write?",
+            font=('Arial', 10)
+        ).pack(pady=(20, 10))
+        
+        # Spinbox for quantity
+        quantity_var = tk.IntVar(value=1)
+        spinbox = ttk.Spinbox(
+            dialog,
+            from_=1,
+            to=100,
+            textvariable=quantity_var,
+            width=10,
+            font=('Arial', 12)
+        )
+        spinbox.pack(pady=10)
+        spinbox.focus()
+        
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        def on_ok():
+            result[0] = quantity_var.get()
+            dialog.destroy()
+        
+        def on_cancel():
+            result[0] = 0
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="OK", command=on_ok, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+        
+        # Bind Enter key
+        dialog.bind('<Return>', lambda e: on_ok())
+        dialog.bind('<Escape>', lambda e: on_cancel())
+        
+        dialog.wait_window()
+        return result[0]
+    
     def _handle_read_kanban(self):
         """Handle Read Kanban button click"""
         if self.on_read_kanban:
             self.on_read_kanban()
+    
+    def _handle_read_multiple(self):
+        """Handle Read Multiple button click"""
+        if self.on_read_multiple:
+            self.on_read_multiple()
+    
+    def _ask_quantity_read(self) -> int:
+        """Ask user for number of cards to read"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Read Multiple Cards")
+        dialog.geometry("300x150")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        result = [0]
+        
+        # Label
+        ttk.Label(
+            dialog,
+            text="How many cards do you want to read?",
+            font=('Arial', 10)
+        ).pack(pady=(20, 10))
+        
+        # Spinbox for quantity
+        quantity_var = tk.IntVar(value=1)
+        spinbox = ttk.Spinbox(
+            dialog,
+            from_=1,
+            to=100,
+            textvariable=quantity_var,
+            width=10,
+            font=('Arial', 12)
+        )
+        spinbox.pack(pady=10)
+        spinbox.focus()
+        
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        def on_ok():
+            result[0] = quantity_var.get()
+            dialog.destroy()
+        
+        def on_cancel():
+            result[0] = 0
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="OK", command=on_ok, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+        
+        # Bind Enter key
+        dialog.bind('<Return>', lambda e: on_ok())
+        dialog.bind('<Escape>', lambda e: on_cancel())
+        
+        dialog.wait_window()
+        return result[0]
     
     def _handle_write_bypass(self):
         """Handle Write Bypass button click"""
@@ -285,6 +486,77 @@ class KanbanGUI:
             )
             if result:
                 self.on_clear_card()
+    
+    def _handle_clear_multiple(self):
+        """Handle Clear Multiple button click"""
+        if self.on_clear_multiple:
+            result = messagebox.askyesno(
+                "Confirm Clear Multiple",
+                "This will erase all data from multiple cards.\n\n"
+                "You can stop anytime by clicking 'Stop' button.\n\n"
+                "Are you sure you want to continue?"
+            )
+            if result:
+                self.on_clear_multiple()
+    
+    def _ask_quantity_clear(self) -> int:
+        """Ask user for number of cards to clear"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Clear Multiple Cards")
+        dialog.geometry("300x150")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        result = [0]
+        
+        # Label
+        ttk.Label(
+            dialog,
+            text="How many cards do you want to clear?",
+            font=('Arial', 10)
+        ).pack(pady=(20, 10))
+        
+        # Spinbox for quantity
+        quantity_var = tk.IntVar(value=1)
+        spinbox = ttk.Spinbox(
+            dialog,
+            from_=1,
+            to=100,
+            textvariable=quantity_var,
+            width=10,
+            font=('Arial', 12)
+        )
+        spinbox.pack(pady=10)
+        spinbox.focus()
+        
+        # Buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        def on_ok():
+            result[0] = quantity_var.get()
+            dialog.destroy()
+        
+        def on_cancel():
+            result[0] = 0
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="OK", command=on_ok, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+        
+        # Bind Enter key
+        dialog.bind('<Return>', lambda e: on_ok())
+        dialog.bind('<Escape>', lambda e: on_cancel())
+        
+        dialog.wait_window()
+        return result[0]
     
     def log(self, message: str, level: str = 'info'):
         """
@@ -309,6 +581,10 @@ class KanbanGUI:
     def set_card_status(self, status: str, present: bool = False):
         """Update card status indicator"""
         self.card_status.set(status)
+    
+    def set_card_uid(self, uid: str):
+        """Update card UID display"""
+        self.uid_var.set(uid if uid else "-")
     
     def set_thread_values(self, thread1: str, thread2: str):
         """Set thread input values"""
