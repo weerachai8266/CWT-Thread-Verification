@@ -18,7 +18,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <MFRC522.h>
-#include <SoftwareSerial.h>
+#include <HardwareSerial.h>
 
 // =============== PIN DEFINITIONS ===============
 // MFRC522 RFID Reader (SPI)
@@ -28,12 +28,12 @@
 #define RFID_MOSI_PIN   23
 #define RFID_MISO_PIN   19
 
-// GM65 QR Scanner 1 (UART)
+// GM65 QR Scanner 1 (Hardware Serial1 with custom pins)
 #define QR1_RX_PIN      4
 #define QR1_TX_PIN      2
-#define QR1_TRIG_PIN    15
+#define QR1_TRIG_PIN    12  // Changed from 15 to avoid boot issues
 
-// GM65 QR Scanner 2 (UART)
+// GM65 QR Scanner 2 (Hardware Serial2 - U2_RXD/U2_TXD)
 #define QR2_RX_PIN      16
 #define QR2_TX_PIN      17
 #define QR2_TRIG_PIN    13
@@ -48,8 +48,9 @@
 #define LED_ALARM1_PIN  27
 #define LED_ALARM2_PIN  14
 
-// Machine Output
-#define MACHINE_OUT_PIN 21
+// Machine Outputs
+#define MACHINE_OUT1_PIN 21
+// #define MACHINE_OUT2_PIN 15  // Reserved for V2 (connect through ULN2003A)
 
 // =============== CONSTANTS ===============
 #define BLOCK_THREAD1   4
@@ -62,8 +63,8 @@
 // =============== GLOBAL OBJECTS ===============
 MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);
 MFRC522::MIFARE_Key key;
-SoftwareSerial qrScanner1(QR1_RX_PIN, QR1_TX_PIN);
-SoftwareSerial qrScanner2(QR2_RX_PIN, QR2_TX_PIN);
+HardwareSerial qrScanner1(1);  // Use UART1 with custom pins
+HardwareSerial qrScanner2(2);  // Use UART2 (GPIO16/17)
 
 // =============== STATE MACHINE ===============
 enum SystemState {
@@ -99,7 +100,7 @@ void setupQRScanners();
 void updateLEDs(bool ready1, bool ready2, bool alarm1, bool alarm2);
 void setMachineOutput(bool enable);
 void triggerQRScanner(int scannerNum);
-String readQRCode(SoftwareSerial& scanner, int timeoutMs);
+String readQRCode(HardwareSerial& scanner, int timeoutMs);
 bool readKanbanCard(ThreadData& data);
 bool detectBobbin(int bobbinPin);
 bool verifyThreads();
@@ -154,8 +155,9 @@ void setupPins() {
     pinMode(LED_ALARM1_PIN, OUTPUT);
     pinMode(LED_ALARM2_PIN, OUTPUT);
     
-    // Machine output
-    pinMode(MACHINE_OUT_PIN, OUTPUT);
+    // Machine outputs
+    pinMode(MACHINE_OUT1_PIN, OUTPUT);
+    // pinMode(MACHINE_OUT2_PIN, OUTPUT);  // Reserved for V2
     
     // Initialize all outputs to safe state
     updateLEDs(false, false, false, false);
@@ -186,13 +188,18 @@ void setupRFID() {
 
 // =============== QR SCANNER SETUP ===============
 void setupQRScanners() {
-    qrScanner1.begin(9600);
-    qrScanner2.begin(9600);
+    // Initialize QR Scanner 1 on Serial1 with custom pins
+    qrScanner1.begin(9600, SERIAL_8N1, QR1_RX_PIN, QR1_TX_PIN);
+    
+    // Initialize QR Scanner 2 on Serial2 with hardware UART pins
+    qrScanner2.begin(9600, SERIAL_8N1, QR2_RX_PIN, QR2_TX_PIN);
+    
+    delay(100); // Allow serial ports to stabilize
     
     // TODO: Test with actual GM65 scanners
-    Serial.println("[SETUP] QR scanners initialized");
-    Serial.println("[INFO] QR Scanner 1: RX=4, TX=2, TRIG=15");
-    Serial.println("[INFO] QR Scanner 2: RX=16, TX=17, TRIG=13");
+    Serial.println("[SETUP] QR scanners initialized (Hardware Serial)");
+    Serial.println("[INFO] QR Scanner 1 (Serial1): RX=GPIO4, TX=GPIO2, TRIG=GPIO12");
+    Serial.println("[INFO] QR Scanner 2 (Serial2): RX=GPIO16 (U2_RXD), TX=GPIO17 (U2_TXD), TRIG=GPIO13");
 }
 
 // =============== LED CONTROL ===============
@@ -205,9 +212,11 @@ void updateLEDs(bool ready1, bool ready2, bool alarm1, bool alarm2) {
 
 // =============== MACHINE OUTPUT CONTROL ===============
 void setMachineOutput(bool enable) {
-    digitalWrite(MACHINE_OUT_PIN, enable ? HIGH : LOW);
+    digitalWrite(MACHINE_OUT1_PIN, enable ? HIGH : LOW);
+    // digitalWrite(MACHINE_OUT2_PIN, enable ? HIGH : LOW);  // Reserved for V2
     Serial.print("[OUTPUT] Machine: ");
     Serial.println(enable ? "ENABLED" : "DISABLED");
+    // Future V2: Add Machine 2 control
 }
 
 // =============== QR SCANNER TRIGGER ===============
@@ -224,7 +233,7 @@ void triggerQRScanner(int scannerNum) {
 }
 
 // =============== READ QR CODE ===============
-String readQRCode(SoftwareSerial& scanner, int timeoutMs) {
+String readQRCode(HardwareSerial& scanner, int timeoutMs) {
     String qrData = "";
     unsigned long startTime = millis();
     
