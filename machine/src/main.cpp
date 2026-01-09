@@ -92,6 +92,8 @@ struct ThreadData {
 ThreadData kanbanData;
 String qrCode1 = "";
 String qrCode2 = "";
+byte kanbanUID[10]; // Store Kanban card UID (max 10 bytes)
+byte kanbanUIDSize = 0;
 
 // =============== FUNCTION PROTOTYPES ===============
 void setupPins();
@@ -114,7 +116,7 @@ void setup() {
     delay(1000);
     
     Serial.println("\n\n========================================");
-    Serial.println("  CWT Thread Verification System");
+    Serial.println("  Thread Verification System");
     Serial.println("  ESP32 Machine Controller v1.0.0");
     Serial.println("========================================\n");
     
@@ -168,14 +170,26 @@ void setupPins() {
 
 // =============== RFID SETUP ===============
 void setupRFID() {
-    SPI.begin();
-    rfid.PCD_Init();
+    // Explicit SPI pins for ESP32
+    SPI.begin(RFID_SCK_PIN, RFID_MISO_PIN, RFID_MOSI_PIN, RFID_SS_PIN);
+    
+    // Set SS and RST as outputs
+    pinMode(RFID_SS_PIN, OUTPUT);
+    pinMode(RFID_RST_PIN, OUTPUT);
+    
+    // Hardware reset
+    digitalWrite(RFID_RST_PIN, LOW);
+    delay(50);
+    digitalWrite(RFID_RST_PIN, HIGH);
+    delay(50);
+    
+    rfid.PCD_Init(RFID_SS_PIN, RFID_RST_PIN);
     delay(100);
     
-    // TODO: Test with actual hardware
+    // Debug SPI communication
     // Verify RFID reader is connected
     byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
-    Serial.print("[SETUP] MFRC522 Version: 0x");
+    Serial.print("[SETUP] MFRC522 Register: 0x");
     Serial.println(version, HEX);
     
     if (version == 0x00 || version == 0xFF) {
@@ -198,8 +212,8 @@ void setupQRScanners() {
     
     // TODO: Test with actual GM65 scanners
     Serial.println("[SETUP] QR scanners initialized (Hardware Serial)");
-    Serial.println("[INFO] QR Scanner 1 (Serial1): RX=GPIO4, TX=GPIO2, TRIG=GPIO12");
-    Serial.println("[INFO] QR Scanner 2 (Serial2): RX=GPIO16 (U2_RXD), TX=GPIO17 (U2_TXD), TRIG=GPIO13");
+    // Serial.println("[INFO] QR Scanner 1 (Serial1): RX=GPIO4, TX=GPIO2, TRIG=GPIO12");
+    // Serial.println("[INFO] QR Scanner 2 (Serial2): RX=GPIO16 (U2_RXD), TX=GPIO17 (U2_TXD), TRIG=GPIO13");
 }
 
 // =============== LED CONTROL ===============
@@ -212,47 +226,81 @@ void updateLEDs(bool ready1, bool ready2, bool alarm1, bool alarm2) {
 
 // =============== MACHINE OUTPUT CONTROL ===============
 void setMachineOutput(bool enable) {
-    digitalWrite(MACHINE_OUT1_PIN, enable ? HIGH : LOW);
-    // digitalWrite(MACHINE_OUT2_PIN, enable ? HIGH : LOW);  // Reserved for V2
-    Serial.print("[OUTPUT] Machine: ");
-    Serial.println(enable ? "ENABLED" : "DISABLED");
+    static bool lastState = false;
+    static bool initialized = false;
+    
+    // Only update and print if state changed
+    if (!initialized || lastState != enable) {
+        digitalWrite(MACHINE_OUT1_PIN, enable ? HIGH : LOW);
+        // digitalWrite(MACHINE_OUT2_PIN, enable ? HIGH : LOW);  // Reserved for V2
+        Serial.print("[OUTPUT] Machine: ");
+        Serial.println(enable ? "ENABLED" : "DISABLED");
+        lastState = enable;
+        initialized = true;
+    }
     // Future V2: Add Machine 2 control
 }
 
 // =============== QR SCANNER TRIGGER ===============
 void triggerQRScanner(int scannerNum) {
-    int trigPin = (scannerNum == 1) ? QR1_TRIG_PIN : QR2_TRIG_PIN;
+    // GM65 Serial command trigger: 7E 00 08 01 00 02 01 AB CD
+    byte triggerCmd[] = {0x7E, 0x00, 0x08, 0x01, 0x00, 0x02, 0x01, 0xAB, 0xCD};
     
-    // Send trigger pulse (100ms)
-    digitalWrite(trigPin, HIGH);
-    delay(100);
-    digitalWrite(trigPin, LOW);
+    HardwareSerial& scanner = (scannerNum == 1) ? qrScanner1 : qrScanner2;
+    
+    // Clear buffer before trigger
+    while (scanner.available()) scanner.read();
+    
+    // Send serial trigger command
+    scanner.write(triggerCmd, sizeof(triggerCmd));
     
     Serial.print("[QR] Triggered scanner ");
-    Serial.println(scannerNum);
+    Serial.print(scannerNum);
+    Serial.println(" (Serial command)");
 }
 
 // =============== READ QR CODE ===============
 String readQRCode(HardwareSerial& scanner, int timeoutMs) {
     String qrData = "";
     unsigned long startTime = millis();
-    
-    // Clear any existing data
-    while (scanner.available()) {
-        scanner.read();
-    }
+    bool headerSkipped = false;
+    int headerBytes = 0;
     
     // Wait for data with timeout
+    // GM65 response format: [02][00][00][01][00][LEN_HIGH][LEN_LOW] + QR_DATA + [0D]
+    // Skip first 7 bytes (header + length bytes)
     while (millis() - startTime < timeoutMs) {
-        if (scanner.available()) {
-            char c = scanner.read();
-            if (c == '\n' || c == '\r') {
-                if (qrData.length() > 0) {
-                    break; // End of QR code
+        while (scanner.available()) {
+            byte b = scanner.read();
+            
+            // Skip header bytes (first 7 bytes)
+            if (!headerSkipped) {
+                headerBytes++;
+                if (headerBytes >= 7) {
+                    headerSkipped = true;
                 }
-            } else {
-                qrData += c;
+                continue;
             }
+            
+            // End of data (CR or LF)
+            if (b == 0x0D || b == 0x0A) {
+                if (qrData.length() > 0) {
+                    break;
+                }
+                continue;
+            }
+            
+            // Printable ASCII only
+            if (b >= 32 && b <= 126) {
+                qrData += (char)b;
+            }
+        }
+        
+        // Exit if we got data and saw end marker
+        if (qrData.length() > 0 && headerSkipped) {
+            // Check if no more data coming
+            delay(50);
+            if (!scanner.available()) break;
         }
         delay(10);
     }
@@ -268,22 +316,14 @@ bool readKanbanCard(ThreadData& data) {
     data.thread2 = "";
     data.isBypass = false;
     
-    // Check for new card
-    if (!rfid.PICC_IsNewCardPresent()) {
-        return false;
-    }
-    
+    // Try to read card serial (card already detected in WAIT_KANBAN state)
     if (!rfid.PICC_ReadCardSerial()) {
-        return false;
-    }
-    
-    Serial.println("\n[RFID] Card detected!");
-    Serial.print("[RFID] UID: ");
-    for (byte i = 0; i < rfid.uid.size; i++) {
-        Serial.print(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
-        Serial.print(rfid.uid.uidByte[i], HEX);
-    }
-    Serial.println();
+        // If failed, try detecting again
+        if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+            Serial.println("[DEBUG] Cannot read card serial");
+            return false;
+        }
+    }   
     
     // Read Thread 1 from Block 4
     byte buffer1[18];
@@ -352,9 +392,8 @@ bool readKanbanCard(ThreadData& data) {
 
 // =============== BOBBIN DETECTION ===============
 bool detectBobbin(int bobbinPin) {
-    // TODO: Adjust logic based on sensor type (NPN/PNP)
-    // Assuming active LOW for NPN sensor
-    return digitalRead(bobbinPin) == LOW;
+    // PNP sensor or active HIGH logic
+    return digitalRead(bobbinPin) == HIGH;
 }
 
 // =============== THREAD VERIFICATION ===============
@@ -396,18 +435,62 @@ void handleStateMachine() {
     
     switch (currentState) {
         // ===== WAIT FOR KANBAN =====
-        case STATE_WAIT_KANBAN:
-            updateLEDs(false, false, false, false);
+        case STATE_WAIT_KANBAN: {
+            static unsigned long lastDebug = 0;
+            static bool readerReset = false;
+            
+            // Reset RFID reader once when entering this state to clear HALT status
+            if (!readerReset) {
+                rfid.PCD_Init();
+                delay(50);
+                readerReset = true;
+                Serial.println("[DEBUG] RFID reader reset");
+            }
+            
+            if (millis() - lastDebug > 2000) {
+                lastDebug = millis();
+                Serial.println("[DEBUG] Waiting for card... Place card on reader.");
+            }
+            
+            // Blink READY LEDs every 1 second when waiting (no bobbin state)
+            bool blinkState = (millis() / 1000) % 2 == 0;
+            updateLEDs(blinkState, blinkState, false, false);
             setMachineOutput(false);
             
             if (rfid.PICC_IsNewCardPresent()) {
+                Serial.println("[DEBUG] Card detected! Moving to READ_KANBAN");
+                readerReset = false; // Reset flag for next time
                 currentState = STATE_READ_KANBAN;
             }
             break;
+        }
         
         // ===== READ KANBAN CARD =====
         case STATE_READ_KANBAN:
+            Serial.println("[DEBUG] Attempting to read card...");
             if (readKanbanCard(kanbanData)) {
+                // Store Kanban card UID for later comparison
+                kanbanUIDSize = rfid.uid.size;
+                for (byte i = 0; i < kanbanUIDSize; i++) {
+                    kanbanUID[i] = rfid.uid.uidByte[i];
+                }
+                
+                Serial.println("\n========== KANBAN DATA ==========");
+                Serial.print("[RFID] Card detected!\n[RFID] UID: ");
+                for (byte i = 0; i < rfid.uid.size; i++) {
+                    Serial.print(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
+                    Serial.print(rfid.uid.uidByte[i], HEX);
+                }
+                Serial.println();
+                Serial.print("Thread 1: \"");
+                Serial.print(kanbanData.thread1);
+                Serial.println("\"");
+                Serial.print("Thread 2: \"");
+                Serial.print(kanbanData.thread2);
+                Serial.println("\"");
+                Serial.print("Bypass: ");
+                Serial.println(kanbanData.isBypass ? "YES" : "NO");
+                
                 if (kanbanData.isBypass) {
                     currentState = STATE_BYPASS;
                 } else if (kanbanData.thread1.length() > 0 && kanbanData.thread2.length() > 0) {
@@ -425,10 +508,26 @@ void handleStateMachine() {
         
         // ===== WAIT FOR BOBBINS =====
         case STATE_WAIT_BOBBINS: {
+            static unsigned long lastBobbinDebug = 0;
             bool bobbin1Present = detectBobbin(BOBBIN1_PIN);
             bool bobbin2Present = detectBobbin(BOBBIN2_PIN);
             
-            updateLEDs(bobbin1Present, bobbin2Present, !bobbin1Present, !bobbin2Present);
+            // Debug bobbin status every 2 seconds
+            if (millis() - lastBobbinDebug > 2000) {
+                lastBobbinDebug = millis();
+                Serial.print("[DEBUG] Bobbin1 (GPIO32): ");
+                Serial.print(digitalRead(BOBBIN1_PIN));
+                Serial.print(" -> ");
+                Serial.println(bobbin1Present ? "PRESENT" : "NOT PRESENT");
+                Serial.print("[DEBUG] Bobbin2 (GPIO33): ");
+                Serial.print(digitalRead(BOBBIN2_PIN));
+                Serial.print(" -> ");
+                Serial.println(bobbin2Present ? "PRESENT" : "NOT PRESENT");
+            }
+            
+            // Blink READY LEDs every 1 second when waiting for bobbins
+            bool blinkState = (millis() / 1000) % 2 == 0;
+            updateLEDs(blinkState, blinkState, false, false);
             
             if (bobbin1Present && bobbin2Present) {
                 Serial.println("[INFO] Both bobbins detected");
@@ -455,6 +554,7 @@ void handleStateMachine() {
             if (qrCode1.length() > 0) {
                 Serial.print("[SUCCESS] QR Code 1: ");
                 Serial.println(qrCode1);
+                Serial.println();
                 updateLEDs(true, false, false, false);
                 currentState = STATE_SCAN_QR2;
             } else {
@@ -488,57 +588,73 @@ void handleStateMachine() {
         case STATE_VERIFY:
             if (verifyThreads()) {
                 Serial.println("[SUCCESS] Thread verification passed!");
+                Serial.println("==================================");
                 currentState = STATE_READY;
             } else {
                 Serial.println("[ERROR] Thread verification failed!");
+                Serial.println("==================================");
                 currentState = STATE_ERROR;
             }
             break;
         
         // ===== READY (MACHINE ENABLED) =====
-        case STATE_READY:
+        case STATE_READY: {
+            bool bobbin1Present = detectBobbin(BOBBIN1_PIN);
+            bool bobbin2Present = detectBobbin(BOBBIN2_PIN);
+            
+            // Check if any bobbin is removed → restart entire system
+            if (!bobbin1Present || !bobbin2Present) {
+                Serial.println("[WARNING] Bobbin removed! Restarting system...");
+                setMachineOutput(false);
+                updateLEDs(false, false, true, true);
+                delay(1000);
+                // Clear all data
+                kanbanData.thread1 = "";
+                kanbanData.thread2 = "";
+                kanbanData.isBypass = false;
+                qrCode1 = "";
+                qrCode2 = "";
+                kanbanUIDSize = 0;
+                currentState = STATE_WAIT_KANBAN;
+                break;
+            }
+            
+            // No need to check Kanban card - if removed, user will reset manually
+            
             updateLEDs(true, true, false, false);
             setMachineOutput(true);
-            
-            // Check if Kanban card is removed
-            if (!rfid.PICC_IsNewCardPresent()) {
-                Serial.println("[INFO] Kanban card removed");
-                currentState = STATE_WAIT_KANBAN;
-            }
             break;
+        }
         
         // ===== BYPASS MODE =====
         case STATE_BYPASS:
-            Serial.println("[BYPASS] Machine enabled without verification");
             updateLEDs(true, true, false, false);
             setMachineOutput(true);
-            
-            // Check if Kanban card is removed
-            if (!rfid.PICC_IsNewCardPresent()) {
-                Serial.println("[INFO] Kanban card removed");
-                currentState = STATE_WAIT_KANBAN;
-            }
             break;
         
         // ===== ERROR STATE =====
-        case STATE_ERROR:
+        case STATE_ERROR: {
+            // ALARM LEDs solid ON when mismatch
             updateLEDs(false, false, true, true);
             setMachineOutput(false);
             
-            // Blink alarm LEDs
-            if ((millis() / 500) % 2 == 0) {
-                updateLEDs(false, false, true, true);
-            } else {
-                updateLEDs(false, false, false, false);
-            }
+            bool bobbin1Present = detectBobbin(BOBBIN1_PIN);
+            bool bobbin2Present = detectBobbin(BOBBIN2_PIN);
             
-            // Wait for card removal to reset
-            if (!rfid.PICC_IsNewCardPresent()) {
-                Serial.println("[INFO] Resetting system");
+            // Reset when any bobbin removed (changing thread)
+            if (!bobbin1Present || !bobbin2Present) {
+                Serial.println("[INFO] Bobbin removed! Resetting system...");
+                // Clear all data
+                kanbanData.thread1 = "";
+                kanbanData.thread2 = "";
+                kanbanData.isBypass = false;
+                qrCode1 = "";
+                qrCode2 = "";
                 delay(1000);
                 currentState = STATE_WAIT_KANBAN;
             }
             break;
+        }
         
         default:
             currentState = STATE_WAIT_KANBAN;
